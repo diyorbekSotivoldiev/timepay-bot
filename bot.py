@@ -35,13 +35,32 @@ from aiogram.types import (
 # ====================== SOZLAMALAR ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BU_YERGA_BOT_TOKENINI_QOYING")
 GROUP_ID = int(os.getenv("GROUP_ID", "0"))   # masalan: -1001234567890
-MIN_VOICE_SECONDS = 60                        # ovozli xabar minimal davomiyligi
+MIN_VOICE_SECONDS = 30                        # ovozli xabar minimal davomiyligi
 TZ = ZoneInfo("Asia/Tashkent")
+# Rezyume raqami saqlanadigan fayl (Railway Volume bo'lsa: /data/counter.txt)
+COUNTER_FILE = os.getenv("COUNTER_FILE", "counter.txt")
 # ========================================================
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
 e = html.escape  # foydalanuvchi matnini xavfsiz qilish uchun
+counter_lock = asyncio.Lock()
+
+
+def read_counter() -> int:
+    try:
+        with open(COUNTER_FILE) as f:
+            return int(f.read().strip() or 0)
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def save_counter(n: int) -> None:
+    d = os.path.dirname(COUNTER_FILE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(COUNTER_FILE, "w") as f:
+        f.write(str(n))
 
 
 class Form(StatesGroup):
@@ -49,6 +68,7 @@ class Form(StatesGroup):
     experience = State()
     address = State()
     child_order = State()
+    leave_reason = State()
     max_income = State()
     expense = State()
     voice = State()
@@ -150,7 +170,18 @@ async def q_child(message: Message, state: FSMContext):
     if text is None:
         return
     await state.update_data(child_order=text)
-    await message.answer("<b>5. Eng ko'p qancha daromad qilgansiz?</b>")
+    await message.answer("<b>5. Oxirgi ishlagan joyingizdan nega bo'shadingiz?</b>")
+    await state.set_state(Form.leave_reason)
+
+
+# 5. Oxirgi ishdan bo'shash sababi
+@private.message(Form.leave_reason)
+async def q_leave(message: Message, state: FSMContext):
+    text = await need_text(message)
+    if text is None:
+        return
+    await state.update_data(leave_reason=text)
+    await message.answer("<b>6. Eng ko'p qancha daromad qilgansiz?</b>")
     await state.set_state(Form.max_income)
 
 
@@ -161,7 +192,7 @@ async def q_income(message: Message, state: FSMContext):
     if text is None:
         return
     await state.update_data(max_income=text)
-    await message.answer("<b>6. 1 oylik xarajatingiz qancha?</b>")
+    await message.answer("<b>7. 1 oylik xarajatingiz qancha?</b>")
     await state.set_state(Form.expense)
 
 
@@ -173,10 +204,10 @@ async def q_expense(message: Message, state: FSMContext):
         return
     await state.update_data(expense=text)
     await message.answer(
-        "<b>7. Ovozli xabar yuboring.</b>\n\n"
+        "<b>8. Ovozli xabar yuboring.</b>\n\n"
         "Nimanidir o'qib bering yoki o'zingiz haqingizda gapirib bering "
         "(yuqoridagi savollardan tashqari).\n"
-        "⏱ Ovozli xabar <b>kamida 1 daqiqa</b> bo'lishi kerak."
+        "⏱ Ovozli xabar <b>kamida 30 soniya</b> bo'lishi kerak."
     )
     await state.set_state(Form.voice)
 
@@ -193,7 +224,7 @@ async def q_voice(message: Message, state: FSMContext):
         return
     await state.update_data(voice_id=message.voice.file_id, voice_dur=dur)
     await message.answer(
-        "<b>8. Telefon raqamingizni yuboring.</b>\n"
+        "<b>9. Telefon raqamingizni yuboring.</b>\n"
         "Pastdagi tugmani bosing yoki raqamni yozing (masalan: +998901234567).",
         reply_markup=phone_kb,
     )
@@ -225,19 +256,21 @@ async def q_phone(message: Message, state: FSMContext):
     await state.set_state(Form.confirm)
 
 
-def build_summary(data: dict, user, for_group: bool = False) -> str:
+def build_summary(data: dict, user, number: int | None = None) -> str:
+    for_group = number is not None
     tg = f"@{user.username}" if user.username else "username yo'q"
     link = f'<a href="tg://user?id={user.id}">{e(user.full_name)}</a>'
-    head = "🆕 <b>YANGI REZYUME</b>\n\n" if for_group else "📋 <b>Sizning javoblaringiz</b>\n\n"
+    head = f"📄 <b>Rezyume №{number}</b>\n\n" if for_group else "📋 <b>Sizning javoblaringiz</b>\n\n"
     body = (
         f"1. <b>Yoshi:</b> {e(data['age'])}\n"
         f"2. <b>Sotuvdagi tajribasi:</b> {e(data['experience'])}\n"
         f"3. <b>Manzili:</b> {e(data['address'])}\n"
         f"4. <b>Oilada nechanchi farzand:</b> {e(data['child_order'])}\n"
-        f"5. <b>Eng ko'p daromadi:</b> {e(data['max_income'])}\n"
-        f"6. <b>Oylik xarajati:</b> {e(data['expense'])}\n"
-        f"7. <b>Ovozli xabar:</b> {data['voice_dur']} soniya\n"
-        f"8. <b>Telefon:</b> {e(data['phone'])}\n"
+        f"5. <b>Oxirgi ishdan bo'shash sababi:</b> {e(data['leave_reason'])}\n"
+        f"6. <b>Eng ko'p daromadi:</b> {e(data['max_income'])}\n"
+        f"7. <b>Oylik xarajati:</b> {e(data['expense'])}\n"
+        f"8. <b>Ovozli xabar:</b> {data['voice_dur']} soniya\n"
+        f"9. <b>Telefon:</b> {e(data['phone'])}\n"
         f"    <b>Telegram:</b> {tg} ({link})\n"
     )
     if for_group:
@@ -255,17 +288,20 @@ async def q_confirm_wait(message: Message):
 async def cb_confirm(call: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     user = call.from_user
-    try:
-        sent = await bot.send_message(GROUP_ID, build_summary(data, user, for_group=True))
-        await bot.send_voice(
-            GROUP_ID, data["voice_id"],
-            caption=f"🎤 {e(user.full_name)} — ovozli xabar",
-            reply_to_message_id=sent.message_id,
-        )
-    except Exception as ex:
-        logging.exception("Guruhga yuborishda xato: %s", ex)
-        await call.answer("Texnik xatolik. Birozdan so'ng qayta urinib ko'ring.", show_alert=True)
-        return
+    async with counter_lock:
+        number = read_counter() + 1
+        try:
+            sent = await bot.send_message(GROUP_ID, build_summary(data, user, number))
+            await bot.send_voice(
+                GROUP_ID, data["voice_id"],
+                caption=f"🎤 Rezyume №{number} — {e(user.full_name)}",
+                reply_to_message_id=sent.message_id,
+            )
+        except Exception as ex:
+            logging.exception("Guruhga yuborishda xato: %s", ex)
+            await call.answer("Texnik xatolik. Birozdan so'ng qayta urinib ko'ring.", show_alert=True)
+            return
+        save_counter(number)
 
     await call.message.edit_reply_markup(reply_markup=None)
     await call.message.answer(
